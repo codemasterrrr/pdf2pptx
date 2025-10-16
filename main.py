@@ -1,80 +1,97 @@
 import streamlit as st
 import fitz  # PyMuPDF
-from pptx import Presentation
-from pptx.util import Inches
-from tqdm import tqdm
+from PIL import Image, ImageOps
 from io import BytesIO
-from PIL import Image
 import os
 
-# Streamlit UI
-st.title("PDF to PPTX Converter")
-st.write("Upload a PDF file to convert each page to a slide in a PPTX file.")
+st.set_page_config(page_title="PDF 흑백 반전 변환기", layout="centered")
 
-# File uploader
-uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+# 제목 & 설명
+st.title("🌓 PDF 흑/백 반전 변환기")
+st.write("PDF를 업로드하면 각 페이지의 색상을 반전시켜 새로운 PDF로 만들어 드립니다. (검정↔흰색 포함 전체 색상 반전)")
 
-# Convert PDF to PPTX
-def convert_pdf_to_pptx(pdf_data, output_filename):
-    pdf_document = fitz.open("pdf", pdf_data)
-    presentation = Presentation()
+# 파일 업로더
+uploaded_file = st.file_uploader("PDF 파일을 선택하세요", type="pdf")
 
-    for page_num in tqdm(range(len(pdf_document)), desc="Converting PDF to PPTX"):
-        page = pdf_document.load_page(page_num)
-        
-        # 페이지 크기 가져오기 (인치 단위로 변환)
-        page_width = Inches(page.rect.width / 72)  # 1인치 = 72pt
-        page_height = Inches(page.rect.height / 72)
-        
-        # 슬라이드 크기 설정
-        presentation.slide_width = page_width
-        presentation.slide_height = page_height
-        
-        # PDF 페이지를 이미지로 렌더링
-        pix = page.get_pixmap()
-        image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        
-        # 슬라이드 추가 및 이미지 배치
-        slide = presentation.slides.add_slide(presentation.slide_layouts[5])  # 빈 슬라이드 레이아웃
-        
-        image_width, image_height = image.size
-        aspect_ratio = image_width / image_height
+def invert_pdf_colors(pdf_bytes, zoom=2.0):
+    """
+    pdf_bytes: 원본 PDF 바이트
+    zoom: 렌더링 배율(기본 2.0 → 해상도 개선)
+    return: 반전 처리된 PDF 바이트 (BytesIO)
+    """
+    # 원본 PDF 열기
+    src_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
-        if page_width / page_height > aspect_ratio:
-            new_height = page_height
-            new_width = new_height * aspect_ratio
-        else:
-            new_width = page_width
-            new_height = new_width / aspect_ratio
+    # 결과 PDF 생성
+    out_doc = fitz.open()
 
-        left = (page_width - new_width) / 2
-        top = (page_height - new_height) / 2
-        
-        # 이미지를 슬라이드에 추가
-        image_bytes = BytesIO()
-        image.save(image_bytes, format="PNG")
-        image_bytes.seek(0)
-        slide.shapes.add_picture(image_bytes, left, top, width=new_width, height=new_height)
-    
-    # 프레젠테이션을 BytesIO에 저장하여 반환
-    pptx_data = BytesIO()
-    presentation.save(pptx_data)
-    pptx_data.seek(0)
-    return pptx_data
+    # 진행률 표시
+    progress = st.progress(0, text="반전 처리 중...")
 
-# Process PDF and provide download link
+    # 페이지별 처리
+    for i in range(len(src_doc)):
+        page = src_doc.load_page(i)
+        rect = page.rect
+
+        # 렌더 매트릭스 (해상도 향상)
+        matrix = fitz.Matrix(zoom, zoom)
+
+        # 페이지 → 픽스맵 렌더링
+        pix = page.get_pixmap(matrix=matrix, alpha=False)  # 알파 제거(RGB)
+
+        # 픽스맵 → PIL 이미지
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+        # 색상 반전 (검정↔흰색 포함 전체 색상)
+        inverted = ImageOps.invert(img)
+
+        # 이미지 → 바이트
+        img_bytes = BytesIO()
+        inverted.save(img_bytes, format="PNG")
+        img_bytes.seek(0)
+
+        # 새 페이지 생성 (원본 페이지 크기 유지)
+        new_page = out_doc.new_page(width=rect.width, height=rect.height)
+
+        # 반전 이미지를 전체 페이지에 삽입
+        # 주의: 렌더 배율(zoom)을 적용했으므로, 이미지가 page rect에 맞게 자동 스케일됩니다.
+        new_page.insert_image(rect, stream=img_bytes.getvalue(), keep_proportion=False)
+
+        progress.progress((i + 1) / len(src_doc), text=f"반전 처리 중... ({i + 1}/{len(src_doc)})")
+
+    progress.empty()
+
+    # 결과 PDF를 메모리에 저장 후 반환
+    out_bytes = BytesIO()
+    out_doc.save(out_bytes)
+    out_doc.close()
+    src_doc.close()
+    out_bytes.seek(0)
+    return out_bytes
+
+# 처리 & 다운로드
 if uploaded_file is not None:
-    # PDF 파일 이름에서 확장자를 제외하고 PPTX 파일 이름 생성
-    output_filename = os.path.splitext(uploaded_file.name)[0] + ".pptx"
-    
-    st.write("Converting PDF to PPTX, please wait...")
-    pptx_data = convert_pdf_to_pptx(uploaded_file.read(), output_filename)
-    st.success("Conversion completed!")
+    # 출력 파일명 지정: 원본 이름 + (반전).pdf
+    base, _ = os.path.splitext(uploaded_file.name)
+    output_filename = f"{base}(반전).pdf"
 
-    # Provide download link for PPTX
+    with st.spinner("PDF 반전 변환 중입니다..."):
+        result_pdf = invert_pdf_colors(uploaded_file.read(), zoom=2.0)
+
+    st.success("반전 변환이 완료되었습니다! ✅")
+
+    # 다운로드 버튼
     st.download_button(
-        label="Download PPTX file",
-        data=pptx_data,
+        label="📥 반전된 PDF 다운로드",
+        data=result_pdf,
         file_name=output_filename,
-        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        mime="application/pdf"
     )
+
+    # 옵션 안내
+    with st.expander("⚙️ 고급 설정 안내 (참고)"):
+        st.markdown(
+            "- 기본 렌더 배율은 **2.0**이며, 더 선명하게 원하시면 코드의 `zoom` 값을 2.5~3.0으로 조절하세요.\n"
+            "- 이 코드는 **전체 색상 반전**을 수행합니다. (검정/흰색 포함)\n"
+            "- 큰 PDF의 경우 메모리 사용량이 증가할 수 있습니다.\n"
+        )
