@@ -8,7 +8,7 @@ from PIL import Image
 import os
 
 # Streamlit UI
-st.title("PDF to PPTX Converter(by 석리송)")
+st.title("PDF to PPTX Converter")
 st.write("Upload a PDF file to convert each page to a slide in a PPTX file.")
 
 # File uploader
